@@ -1,0 +1,16 @@
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Compiled binary
+todo-api
+
+# Env
+.env
+.env.local
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
