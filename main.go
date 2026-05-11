@@ -46,6 +46,8 @@ func main() {
 	boardH.Register(protected)
 	columnH := &handlers.ColumnHandler{DB: conn}
 	columnH.Register(protected)
+	cardH := &handlers.CardHandler{DB: conn}
+	cardH.Register(protected)
 
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("run: %v", err)
