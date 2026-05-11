@@ -149,10 +149,34 @@ func (h *BoardHandler) Get(c *gin.Context) {
 		columns = []models.Column{}
 	}
 
+	cards := []models.Card{}
+	if len(columns) > 0 {
+		colIDs := make([]int64, len(columns))
+		for i, col := range columns {
+			colIDs[i] = col.ID
+		}
+		query, args, err := sqlx.In(
+			`SELECT id, column_id, title, description, due_date, position, created_at, updated_at
+			 FROM cards WHERE column_id IN (?) ORDER BY column_id, position`,
+			colIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		query = h.DB.Rebind(query)
+		if err := h.DB.SelectContext(c.Request.Context(), &cards, query, args...); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for i := range cards {
+			cards[i].Labels = []int64{}
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"board":   board,
 		"columns": columns,
-		"cards":   []struct{}{},
+		"cards":   cards,
 		"labels":  []struct{}{},
 	})
 }
