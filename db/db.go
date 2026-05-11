@@ -11,7 +11,7 @@ import (
 var schema string
 
 func Open(path string) (*sqlx.DB, error) {
-	conn, err := sqlx.Connect("sqlite3", path)
+	conn, err := sqlx.Connect("sqlite3", path+"?_foreign_keys=on")
 	if err != nil {
 		return nil, err
 	}
