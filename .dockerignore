@@ -1,0 +1,26 @@
+.git
+.gitignore
+.gitattributes
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Local SQLite database and journals
+*.db
+*.db-shm
+*.db-wal
+
+# Pre-built binaries
+todo-api
+todo-list
+
+# Local env files
+.env
+.env.*
+
+# Docs / editor noise
+README.md
+CLAUDE.md
+Dockerfile
+.dockerignore
