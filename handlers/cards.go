@@ -23,6 +23,7 @@ func (h *CardHandler) Register(rg *gin.RouterGroup) {
 	rg.POST("/columns/:cid/cards", h.Create)
 	rg.GET("/cards/:id", h.Get)
 	rg.PUT("/cards/:id", h.Update)
+	rg.PATCH("/cards/:id/move", h.Move)
 	rg.DELETE("/cards/:id", h.Delete)
 }
 
@@ -195,6 +196,162 @@ func (h *CardHandler) Update(c *gin.Context) {
 	card.UpdatedAt = now
 	card.Labels = []int64{}
 	c.JSON(http.StatusOK, card)
+}
+
+func (h *CardHandler) Move(c *gin.Context) {
+	uid := auth.UserID(c)
+
+	var id int64
+	if err := parseID(c, "id", &id); err != nil {
+		return
+	}
+
+	var body struct {
+		ColumnID int64 `json:"column_id"`
+		Position int   `json:"position"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	card, err := loadOwnedCard(c.Request.Context(), h.DB, id, uid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "card not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	destCol, err := loadOwnedColumn(c.Request.Context(), h.DB, body.ColumnID, uid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "column not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	sourceCol, err := loadOwnedColumn(c.Request.Context(), h.DB, card.ColumnID, uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if sourceCol.BoardID != destCol.BoardID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "column not on this board"})
+		return
+	}
+
+	sameColumn := sourceCol.ID == destCol.ID
+
+	tx, err := h.DB.BeginTxx(c.Request.Context(), nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	const selectByColumn = `
+		SELECT id, column_id, title, description, due_date, position, created_at, updated_at
+		FROM cards WHERE column_id = ? ORDER BY position`
+
+	var srcCards []models.Card
+	if err := tx.SelectContext(c.Request.Context(), &srcCards, selectByColumn, sourceCol.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Pull the moving card out of the source list.
+	var moving models.Card
+	srcRemaining := make([]models.Card, 0, len(srcCards))
+	for _, ca := range srcCards {
+		if ca.ID == id {
+			moving = ca
+		} else {
+			srcRemaining = append(srcRemaining, ca)
+		}
+	}
+
+	// destBase is the destination list *without* the moving card.
+	var destBase []models.Card
+	if sameColumn {
+		destBase = srcRemaining
+	} else {
+		if err := tx.SelectContext(c.Request.Context(), &destBase, selectByColumn, destCol.ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	// Clamp the target index to [0, len(destBase)].
+	target := body.Position
+	if target < 0 {
+		target = 0
+	}
+	if target > len(destBase) {
+		target = len(destBase)
+	}
+
+	moving.ColumnID = destCol.ID
+
+	destResult := make([]models.Card, 0, len(destBase)+1)
+	destResult = append(destResult, destBase[:target]...)
+	destResult = append(destResult, moving)
+	destResult = append(destResult, destBase[target:]...)
+
+	now := time.Now().UTC()
+
+	for i := range destResult {
+		destResult[i].Position = i
+		destResult[i].Labels = []int64{}
+		if destResult[i].ID == id {
+			destResult[i].ColumnID = destCol.ID
+			destResult[i].UpdatedAt = now
+			if _, err := tx.ExecContext(c.Request.Context(),
+				`UPDATE cards SET column_id = ?, position = ?, updated_at = ? WHERE id = ?`,
+				destCol.ID, i, now, destResult[i].ID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		} else {
+			if _, err := tx.ExecContext(c.Request.Context(),
+				`UPDATE cards SET position = ? WHERE id = ?`, i, destResult[i].ID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+
+	// For same-column moves, source == dest. For cross-column, close the gap in source.
+	var sourceResult []models.Card
+	if sameColumn {
+		sourceResult = destResult
+	} else {
+		sourceResult = make([]models.Card, len(srcRemaining))
+		for i, ca := range srcRemaining {
+			ca.Position = i
+			ca.Labels = []int64{}
+			sourceResult[i] = ca
+			if _, err := tx.ExecContext(c.Request.Context(),
+				`UPDATE cards SET position = ? WHERE id = ?`, i, ca.ID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"source": sourceResult,
+		"dest":   destResult,
+	})
 }
 
 func (h *CardHandler) Delete(c *gin.Context) {
