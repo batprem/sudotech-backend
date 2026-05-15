@@ -58,7 +58,10 @@ func (h *CardHandler) Create(c *gin.Context) {
 	}
 
 	var body struct {
-		Title string `json:"title"`
+		Title       string     `json:"title"`
+		Description string     `json:"description"`
+		DueDate     *time.Time `json:"due_date"`
+		Labels      []int64    `json:"labels"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -73,6 +76,10 @@ func (h *CardHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "title must be 120 characters or fewer"})
 		return
 	}
+	if len(body.Description) > 4000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "description must be 4000 characters or fewer"})
+		return
+	}
 
 	var nextPos int
 	if err := h.DB.GetContext(c.Request.Context(), &nextPos,
@@ -84,8 +91,8 @@ func (h *CardHandler) Create(c *gin.Context) {
 	now := time.Now().UTC()
 	res, err := h.DB.ExecContext(c.Request.Context(),
 		`INSERT INTO cards (column_id, title, description, due_date, position, created_at, updated_at)
-		 VALUES (?, ?, '', NULL, ?, ?, ?)`,
-		cid, body.Title, nextPos, now, now)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		cid, body.Title, body.Description, body.DueDate, nextPos, now, now)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -100,8 +107,8 @@ func (h *CardHandler) Create(c *gin.Context) {
 		ID:          cardID,
 		ColumnID:    cid,
 		Title:       body.Title,
-		Description: "",
-		DueDate:     nil,
+		Description: body.Description,
+		DueDate:     body.DueDate,
 		Position:    nextPos,
 		Labels:      []int64{},
 		CreatedAt:   now,
